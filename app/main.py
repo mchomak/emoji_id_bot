@@ -6,14 +6,25 @@ import os
 from typing import Iterable
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramUnauthorizedError,
+)
 from aiogram.filters import CommandStart
 from aiogram.types import Message
+from dotenv import load_dotenv
+
+load_dotenv()
 
 router = Router()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "562973709:AAGTl_FtxfW3qKuxXbkv0Kc41h4-IaEcAmw")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1132147659"))
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip().strip('"').strip("'")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1132147659").strip())
+TG_PROXY = (os.getenv("TG_PROXY") or "").strip() or None
+BOT_REQUEST_TIMEOUT = float((os.getenv("BOT_REQUEST_TIMEOUT", "120")).strip())
 
 logging.basicConfig(
     level=logging.INFO,
@@ -145,7 +156,7 @@ async def cmd_start(message: Message) -> None:
         "Отправь мне сообщение с premium/custom emoji, и я верну:\n"
         "1) список найденных custom_emoji_id\n"
         "2) готовые строки вида\n"
-        "CustomEmoji(\"🔥\", custom_emoji_id=\"...\")\n\n"
+        'CustomEmoji("🔥", custom_emoji_id="...")\n\n'
         "Также все входящие и исходящие сообщения дублируются админу."
     )
     await answer_and_mirror(message, text)
@@ -162,14 +173,36 @@ async def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set")
 
-    bot = Bot(token=BOT_TOKEN)
+    if ":" not in BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN has invalid format")
+
+    session = AiohttpSession(proxy=TG_PROXY, timeout=BOT_REQUEST_TIMEOUT)
+    bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
 
-    me = await bot.get_me()
-    logger.info("Bot started as @%s", me.username)
+    try:
+        me = await bot.get_me()
+        logger.info("Bot started as @%s", me.username)
+        if TG_PROXY:
+            logger.info("Using proxy for Telegram API requests")
+        await dp.start_polling(bot)
 
-    await dp.start_polling(bot)
+    except TelegramUnauthorizedError as exc:
+        logger.exception("Telegram rejected BOT_TOKEN")
+        raise RuntimeError(
+            "Telegram rejected BOT_TOKEN with 401 Unauthorized. "
+            "Check .env, remove quotes/spaces, and if needed regenerate token in BotFather."
+        ) from exc
+
+    except TelegramNetworkError as exc:
+        logger.exception("Telegram API is unreachable: %s", exc)
+        raise RuntimeError(
+            "Cannot reach Telegram API. Check network/DPI/proxy/firewall or set TG_PROXY."
+        ) from exc
+
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
