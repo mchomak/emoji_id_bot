@@ -1,0 +1,7 @@
+services:
+  emoji-id-bot:
+    build: .
+    container_name: emoji-id-bot
+    restart: unless-stopped
+    env_file:
+      - .env
